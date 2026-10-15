@@ -1,0 +1,7 @@
+streamlit>=1.37
+libsql-client>=0.3.1
+bcrypt>=4.1
+qrcode[pil]>=7.4
+pandas>=2.2
+python-docx>=1.1
+python-dotenv>=1.0
