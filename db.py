@@ -165,6 +165,16 @@ SCHEMA_STATEMENTS = [
         created_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS email_codes (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )
+    """,
 ]
 
 DEFAULT_BASE_QUESTIONS = [
@@ -245,6 +255,13 @@ def init_db():
     _try("ALTER TABLE activities ADD COLUMN participants TEXT")
     _try("ALTER TABLE activities ADD COLUMN expected_participants INTEGER")
     _try("ALTER TABLE activity_speakers ADD COLUMN session_number INTEGER")
+    _try("ALTER TABLE activities ADD COLUMN teacher_name TEXT")
+    _try("ALTER TABLE activities ADD COLUMN subject TEXT")
+    _try("ALTER TABLE activities ADD COLUMN section TEXT")
+    _try("ALTER TABLE activities ADD COLUMN school_year TEXT")
+    _try("ALTER TABLE activities ADD COLUMN term TEXT")
+    _try("ALTER TABLE responses ADD COLUMN student_email_hash TEXT")
+    _try("CREATE UNIQUE INDEX IF NOT EXISTS idx_one_eval_per_student ON responses(activity_id, student_email_hash)")
 
     existing = q("SELECT COUNT(*) AS c FROM base_questions")
     count = existing.rows[0][0] if existing.rows else 0
@@ -265,6 +282,7 @@ def init_db():
         # once they match.
         _fix_base_question_order()
     _fix_base_question_wording()
+    _seed_form6_questions()
 
 
 # Question text corrections, keyed by category (there's exactly one base
@@ -745,3 +763,183 @@ def log_action(user_id: Optional[str], username: Optional[str], action: str, det
 def list_audit_log(limit: int = 200) -> list[dict]:
     rs = q("SELECT username, action, details, created_at FROM audit_log ORDER BY created_at DESC LIMIT ?", [limit])
     return [{"username": r[0], "action": r[1], "details": r[2], "created_at": r[3]} for r in rs.rows]
+
+
+# ---------------------------------------------------------------------------
+# Teacher evaluation (student-facing): teacher fields, email codes, one
+# submission per student per evaluation
+# ---------------------------------------------------------------------------
+
+import hashlib
+import secrets
+
+CODE_TTL_MINUTES = 10
+MAX_CODE_ATTEMPTS = 5
+
+
+def create_evaluation(teacher_name, subject, section, school, school_year, term,
+                      expected_students, created_by) -> dict:
+    """One evaluation = one teacher + one subject + one section. Each gets
+    its own qr_token, so two subjects in one section never mix."""
+    title = f"{teacher_name} — {subject} ({section})"
+    result = create_activity(
+        title, "Teacher Evaluation", dt.date.today(), None, school, section,
+        expected_students, created_by,
+    )
+    q(
+        "UPDATE activities SET teacher_name = ?, subject = ?, section = ?, school_year = ?, term = ? WHERE id = ?",
+        [teacher_name, subject, section, school_year, term, result["id"]],
+    )
+    return result
+
+
+def get_teacher_info(activity_id: str) -> dict:
+    rs = q(
+        "SELECT teacher_name, subject, section, school_year, term FROM activities WHERE id = ?",
+        [activity_id],
+    )
+    if not rs.rows:
+        return {}
+    r = rs.rows[0]
+    return {"teacher_name": r[0], "subject": r[1], "section": r[2], "school_year": r[3], "term": r[4]}
+
+
+def _email_hash(activity_id: str, email: str) -> str:
+    # Hashed per evaluation: the database never stores the student's email
+    # next to their answers, and the same student can't be linked across
+    # different teachers' evaluations.
+    return hashlib.sha256(f"{activity_id}:{email.strip().lower()}".encode("utf-8")).hexdigest()
+
+
+def student_already_submitted(activity_id: str, email: str) -> bool:
+    rs = q(
+        "SELECT COUNT(*) FROM responses WHERE activity_id = ? AND student_email_hash = ?",
+        [activity_id, _email_hash(activity_id, email)],
+    )
+    return (rs.rows[0][0] if rs.rows else 0) > 0
+
+
+def submit_student_response(activity_id: str, email: str, answers: list[dict]) -> Optional[str]:
+    """Returns the new response id, or None if this email already submitted
+    for this evaluation. answers: list of dicts with question_id, qtype, value."""
+    if student_already_submitted(activity_id, email):
+        return None
+    response_id = new_id()
+    stmts = [(
+        "INSERT INTO responses (id, activity_id, participant_name, participant_school, submitted_at, student_email_hash) "
+        "VALUES (?, ?, NULL, NULL, ?, ?)",
+        [response_id, activity_id, now(), _email_hash(activity_id, email)],
+    )]
+    for a in answers:
+        rating = a["value"] if a["qtype"] == "rating" else None
+        choice = a["value"] if a["qtype"] == "multiple_choice" else None
+        text = a["value"] if a["qtype"] == "open_ended" else None
+        stmts.append((
+            "INSERT INTO response_answers (id, response_id, question_id, answer_rating, answer_choice, answer_text) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [new_id(), response_id, a["question_id"], rating, choice, text],
+        ))
+    try:
+        qmany(stmts)
+    except Exception:
+        if student_already_submitted(activity_id, email):
+            return None
+        raise
+    return response_id
+
+
+def _code_hash(email: str, code: str) -> str:
+    return hashlib.sha256(f"{email.strip().lower()}:{code}".encode("utf-8")).hexdigest()
+
+
+def create_email_code(email: str) -> str:
+    """Generate a 6-digit code for this email (replacing any earlier one)
+    and store only its hash. The caller emails the returned code."""
+    email = email.strip().lower()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires = (dt.datetime.utcnow() + dt.timedelta(minutes=CODE_TTL_MINUTES)).isoformat(timespec="seconds") + "Z"
+    q("DELETE FROM email_codes WHERE email = ?", [email])
+    q(
+        "INSERT INTO email_codes (id, email, code_hash, expires_at, attempts, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+        [new_id(), email, _code_hash(email, code), expires, now()],
+    )
+    return code
+
+
+def verify_email_code(email: str, code: str) -> str:
+    """Returns 'ok', 'wrong', 'expired', 'locked' (too many tries) or 'missing'."""
+    email = email.strip().lower()
+    rs = q("SELECT id, code_hash, expires_at, attempts FROM email_codes WHERE email = ?", [email])
+    if not rs.rows:
+        return "missing"
+    row_id, stored_hash, expires_at, attempts = rs.rows[0]
+    if attempts >= MAX_CODE_ATTEMPTS:
+        return "locked"
+    if now() > expires_at:
+        return "expired"
+    if _code_hash(email, code.strip()) != stored_hash:
+        q("UPDATE email_codes SET attempts = attempts + 1 WHERE id = ?", [row_id])
+        return "wrong"
+    q("DELETE FROM email_codes WHERE id = ?", [row_id])
+    return "ok"
+
+
+# ---------------------------------------------------------------------------
+# TPAS Form 6 (student evaluation of teachers) — seeded as the base questions
+# ---------------------------------------------------------------------------
+
+_CAT_A = "A. Knowledge of Subject and Teaching Style"
+_CAT_B = "B. Interest and Stimulation"
+_CAT_C = "C. Class Management and Organization"
+_CAT_D = "D. Teacher–Student Relations"
+
+FORM6_QUESTIONS = [
+    # (text, qtype, category)
+    ("A1. Has very good knowledge of the subject he or she teaches.", "rating", _CAT_A),
+    ("A2. Is organized and prepared for class.", "rating", _CAT_A),
+    ("A3. Uses learning materials such as presentations, pictures, charts, and illustrations to help students understand the lesson.", "rating", _CAT_A),
+    ("A4. Presents the lesson in an understandable way.", "rating", _CAT_A),
+    ("A5. Uses clear examples and emphasizes important points in the lesson.", "rating", _CAT_A),
+    ("A6. Adjusts ways of teaching to the students’ learning abilities.", "rating", _CAT_A),
+    ("B1. Shows enthusiasm about the subject.", "rating", _CAT_B),
+    ("B2. Helps students to think independently.", "rating", _CAT_B),
+    ("B3. Uses a variety of teaching styles and techniques.", "rating", _CAT_B),
+    ("B4. Makes sure that lessons and discussions are interesting, worthwhile, and challenging.", "rating", _CAT_B),
+    ("B5. Lets students share what they think or feel about the lesson.", "rating", _CAT_B),
+    ("B6. Gives encouraging comments when students give correct answers or good ideas.", "rating", _CAT_B),
+    ("C1. Speaks clearly.", "rating", _CAT_C),
+    ("C2. Starts and ends classes on time.", "rating", _CAT_C),
+    ("C3. Establishes clear guidelines for quizzes, tests, and papers.", "rating", _CAT_C),
+    ("C4. Promptly informs the students of the results of tests and assignments.", "rating", _CAT_C),
+    ("C5. Grades students fairly, based on how much they have actually learned or done.", "rating", _CAT_C),
+    ("C6. Sees to it that all students obey school rules and regulations.", "rating", _CAT_C),
+    ("C7. Maintains a reasonable level of order and discipline in class.", "rating", _CAT_C),
+    ("C8. Makes sure that the classroom is clean and orderly and shows proper care for school property.", "rating", _CAT_C),
+    ("D1. Makes the students feel free to ask questions.", "rating", _CAT_D),
+    ("D2. Is fair in dealing with students.", "rating", _CAT_D),
+    ("D3. Is available to students for guidance and assistance even outside class time.", "rating", _CAT_D),
+    ("D4. Shows personal interest in students’ progress and success.", "rating", _CAT_D),
+    ("D5. Reminds students about proper behavior at all times.", "rating", _CAT_D),
+    ("D6. Treats students with patience and respect.", "rating", _CAT_D),
+    ("D7. Reminds students to show respect and care for other people.", "rating", _CAT_D),
+    ("D8. Reminds students of their responsibilities as good and worthy members of the community.", "rating", _CAT_D),
+    ("Comments and suggestions for the professional development of the teacher — Teaching strategy:", "open_ended", "E. Comments: Teaching Strategy"),
+    ("Comments and suggestions for the professional development of the teacher — Classroom management:", "open_ended", "E. Comments: Classroom Management"),
+    ("Comments and suggestions for the professional development of the teacher — Others (please specify):", "open_ended", "E. Comments: Others"),
+]
+
+
+def _seed_form6_questions():
+    """Replace the old seminar base questions with Form 6, once. Skips if
+    Form 6 is already loaded, so it's a no-op on every later start."""
+    rs = q("SELECT COUNT(*) FROM base_questions WHERE category = ?", [_CAT_A])
+    if rs.rows and rs.rows[0][0] > 0:
+        return
+    stmts = [("DELETE FROM base_questions", [])]
+    for idx, (text, qtype, category) in enumerate(FORM6_QUESTIONS, start=1):
+        stmts.append((
+            "INSERT INTO base_questions (id, question_text, qtype, category, options, order_index) "
+            "VALUES (?, ?, ?, ?, NULL, ?)",
+            [new_id(), text, qtype, category, idx],
+        ))
+    qmany(stmts)
