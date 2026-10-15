@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import io
 import os
 
@@ -7,7 +8,17 @@ import qrcode
 import streamlit as st
 
 
-ACTIVITY_TYPES = ["Program", "Activity", "Seminar", "Seminar-Workshop", "Training"]
+ACTIVITY_TYPES = ["Program", "Activity", "Seminar", "Seminar-Workshop", "Training", "Teacher Evaluation"]
+
+TERMS = ["1st Semester", "2nd Semester", "Summer"]
+
+
+def default_school_year() -> str:
+    """e.g. '2026-2027' from June onward, otherwise '2025-2026'."""
+    today = dt.date.today()
+    start = today.year if today.month >= 6 else today.year - 1
+    return f"{start}-{start + 1}"
+
 
 # Hosts that only resolve on the machine running the app itself. If the
 # configured base URL contains any of these, QR codes built from it will
@@ -47,7 +58,7 @@ def warn_if_base_url_unreachable() -> None:
     off this machine. Call this near the top of that page."""
     if not base_url_is_reachable_externally():
         st.error(
-            "⚠️ **QR codes will NOT work for attendees right now.** "
+            "⚠️ **QR codes will NOT work for students right now.** "
             f"Evaluation links are currently built from `{get_app_base_url()}`, "
             "which only resolves on this server — phones scanning the QR code "
             "will get \"site can't be reached.\"\n\n"
@@ -70,7 +81,7 @@ def generate_qr_png_bytes(data: str) -> bytes:
     return buf.getvalue()
 
 
-RATING_LABELS = {1: "Poor", 2: "Fair", 3: "Good", 4: "Very Good", 5: "Excellent"}
+RATING_LABELS = {1: "Very Rarely", 2: "Rarely", 3: "Occasionally", 4: "Frequently", 5: "Consistently"}
 
 
 def rating_scale_help() -> str:

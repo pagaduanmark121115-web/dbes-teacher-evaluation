@@ -56,7 +56,7 @@ def require_login():
     if is_logged_in():
         return
 
-    st.title("DBES Post-Evaluation System")
+        st.title("DBES Teacher Evaluation")
     st.caption("HR Officer / Admin sign-in")
 
     if not db.any_users_exist():

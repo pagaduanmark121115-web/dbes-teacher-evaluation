@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.set_page_config(page_title="DBES Post-Evaluation System", page_icon="📋", layout="wide")
+st.set_page_config(page_title="DBES Teacher Evaluation", page_icon="📋", layout="wide")
 
 import db
 import auth
@@ -19,16 +19,15 @@ def _login_gate():
 # Every page is declared once, up front, and registered in st.navigation()
 # on EVERY run — logged in or not, token or not. Streamlit's router only
 # recognizes a URL if it was part of the most recently registered page set,
-# so if a page is sometimes left out (as Evaluate used to be, when nobody
-# was logged in and no token was present yet), a fresh/unauthenticated
-# visit straight to that URL — exactly what happens scanning a QR code —
-# can briefly flash "Page not found" before the app catches up. Always
-# registering the full set avoids that.
+# so if a page is sometimes left out, a fresh/unauthenticated visit straight
+# to that URL — exactly what happens scanning a QR code — can briefly flash
+# "Page not found" before the app catches up. Always registering the full
+# set avoids that.
 evaluate_page = st.Page("pages/evaluate.py", title="Evaluate", url_path="Evaluate", icon="📝")
 gate_page = st.Page(_login_gate, title="Sign in", url_path="Home", icon="🔑", default=True)
 dashboard_page = st.Page("pages/dashboard.py", title="Dashboard", url_path="Dashboard", icon="📊")
-create_activity_page = st.Page("pages/create_activity.py", title="Create Activity", url_path="Create-Activity", icon="➕")
-activity_results_page = st.Page("pages/activity_results.py", title="Activity Results", url_path="Activity-Results", icon="📈")
+create_evaluation_page = st.Page("pages/create_evaluation.py", title="Create Evaluation", url_path="Create-Evaluation", icon="➕")
+activity_results_page = st.Page("pages/activity_results.py", title="Evaluation Results", url_path="Evaluation-Results", icon="📈")
 manage_users_page = st.Page("pages/manage_users.py", title="Manage Users", url_path="Manage-Users", icon="👥")
 my_account_page = st.Page("pages/my_account.py", title="My Account", url_path="My-Account", icon="⚙️")
 audit_log_page = st.Page("pages/audit_log.py", title="Audit Log", url_path="Audit-Log", icon="🗂️")
@@ -36,9 +35,9 @@ audit_log_page = st.Page("pages/audit_log.py", title="Audit Log", url_path="Audi
 if auth.is_logged_in():
     pg = st.navigation(
         {
-            "Evaluations": [dashboard_page, create_activity_page, activity_results_page],
+            "Evaluations": [dashboard_page, create_evaluation_page, activity_results_page],
             "Administration": [manage_users_page, my_account_page, audit_log_page],
-            "Public form (for reference)": [evaluate_page],
+            "Student form (for reference)": [evaluate_page],
         }
     )
     with st.sidebar:
