@@ -137,6 +137,9 @@ else:
 st.divider()
 st.subheader("Report")
 st.caption("Includes the quantitative summary, per-speaker breakdown, and your qualitative summary above.")
+if activity["activity_type"] == "Teacher Evaluation":
+    st.info("For teacher evaluations, use the **Teacher Reports** page. This per-section report is not meant for teachers.")
+    st.stop()
 report_bytes = report.build_report(activity["id"])
 st.download_button(
     "⬇️ Download Word report (.docx)",

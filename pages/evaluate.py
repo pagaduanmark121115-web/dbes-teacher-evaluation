@@ -118,7 +118,9 @@ st.success(f"Email verified: {verified_email}")
 st.subheader("Step 2: Evaluation")
 st.caption(
     "Rate how often your teacher shows each behavior. Every rating is required. "
-    "The comment boxes at the end are optional."
+    "The comment boxes at the end are optional. Your name, email and section are never shown with your "
+    "answers, but your comments will be shared word for word with your teacher and the principal, "
+    "so please do not write names or details that could identify you."
 )
 st.info(f"**Rating scale:** {utils.rating_scale_help()}", icon="⭐")
 

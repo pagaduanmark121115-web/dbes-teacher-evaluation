@@ -175,6 +175,14 @@ SCHEMA_STATEMENTS = [
         created_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS comment_edits (
+        answer_id TEXT PRIMARY KEY,
+        edited_text TEXT,
+        hidden INTEGER NOT NULL DEFAULT 0,
+        edited_at TEXT NOT NULL
+    )
+    """,
 ]
 
 DEFAULT_BASE_QUESTIONS = [
@@ -943,3 +951,108 @@ def _seed_form6_questions():
             [new_id(), text, qtype, category, idx],
         ))
     qmany(stmts)
+
+# ---------------------------------------------------------------------------
+# Subject-level (pooled) teacher results + comment review
+# ---------------------------------------------------------------------------
+
+def _in_clause(ids) -> str:
+    return ",".join("?" for _ in ids)
+
+
+def _norm(text) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def list_teacher_subject_groups() -> list[dict]:
+    """One group per teacher + subject + school year + term. All sections of
+    that subject land in the same group (activity_ids)."""
+    rs = q(
+        "SELECT id, teacher_name, subject, school_year, term, status FROM activities "
+        "WHERE activity_type = 'Teacher Evaluation' AND teacher_name IS NOT NULL "
+        "ORDER BY teacher_name, subject, school_year, term"
+    )
+    groups: dict = {}
+    for r in rs.rows:
+        key = (_norm(r[1]), _norm(r[2]), _norm(r[3]), _norm(r[4]))
+        g = groups.setdefault(key, {
+            "teacher_name": r[1], "subject": r[2], "school_year": r[3], "term": r[4],
+            "activity_ids": [], "statuses": [],
+        })
+        g["activity_ids"].append(r[0])
+        g["statuses"].append(r[5])
+    out = list(groups.values())
+    for g in out:
+        g["n_sections"] = len(g["activity_ids"])
+        g["all_closed"] = all(s == "closed" for s in g["statuses"])
+    return out
+
+
+def count_responses_for(activity_ids) -> int:
+    if not activity_ids:
+        return 0
+    rs = q(
+        f"SELECT COUNT(*) FROM responses WHERE activity_id IN ({_in_clause(activity_ids)})",
+        list(activity_ids),
+    )
+    return rs.rows[0][0] if rs.rows else 0
+
+
+def get_pooled_rating_summary(activity_ids) -> list[dict]:
+    """Average per question across ALL the given evaluations, pooling the
+    individual student ratings (not averaging section averages). Each
+    evaluation has its own copy of the questions, so they are matched by
+    category + question text."""
+    if not activity_ids:
+        return []
+    rs = q(
+        f"""
+        SELECT aq.category, aq.question_text, AVG(ra.answer_rating) AS avg_rating,
+               COUNT(ra.answer_rating) AS n
+        FROM activity_questions aq
+        LEFT JOIN response_answers ra ON ra.question_id = aq.id AND ra.answer_rating IS NOT NULL
+        WHERE aq.activity_id IN ({_in_clause(activity_ids)}) AND aq.qtype = 'rating'
+        GROUP BY aq.category, aq.question_text
+        """,
+        list(activity_ids),
+    )
+    rows = [{"category": r[0], "question_text": r[1], "avg_rating": r[2], "n": r[3]} for r in rs.rows]
+    rows.sort(key=lambda r: (r["category"], r["question_text"]))
+    return rows
+
+
+def get_pooled_open_ended_answers(activity_ids) -> list[dict]:
+    """Comments across all given evaluations, with any HR edit applied on
+    top. 'section' is for the admin review screen ONLY — never put it in a
+    teacher/principal report."""
+    if not activity_ids:
+        return []
+    rs = q(
+        f"""
+        SELECT ra.id, aq.category, ra.answer_text, ce.edited_text, COALESCE(ce.hidden, 0), a.section
+        FROM response_answers ra
+        JOIN activity_questions aq ON aq.id = ra.question_id
+        JOIN activities a ON a.id = aq.activity_id
+        LEFT JOIN comment_edits ce ON ce.answer_id = ra.id
+        WHERE aq.activity_id IN ({_in_clause(activity_ids)}) AND aq.qtype = 'open_ended'
+          AND ra.answer_text IS NOT NULL AND TRIM(ra.answer_text) != ''
+        """,
+        list(activity_ids),
+    )
+    return [
+        {"id": r[0], "category": r[1], "original_text": r[2], "edited_text": r[3],
+         "hidden": r[4], "section": r[5]}
+        for r in rs.rows
+    ]
+
+
+def save_comment_edit(answer_id: str, edited_text: str, hidden: bool):
+    q("DELETE FROM comment_edits WHERE answer_id = ?", [answer_id])
+    q(
+        "INSERT INTO comment_edits (answer_id, edited_text, hidden, edited_at) VALUES (?, ?, ?, ?)",
+        [answer_id, edited_text, 1 if hidden else 0, now()],
+    )
+
+
+def clear_comment_edit(answer_id: str):
+    q("DELETE FROM comment_edits WHERE answer_id = ?", [answer_id])

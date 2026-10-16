@@ -28,6 +28,7 @@ gate_page = st.Page(_login_gate, title="Sign in", url_path="Home", icon="🔑", 
 dashboard_page = st.Page("pages/dashboard.py", title="Dashboard", url_path="Dashboard", icon="📊")
 create_evaluation_page = st.Page("pages/create_evaluation.py", title="Create Evaluation", url_path="Create-Evaluation", icon="➕")
 activity_results_page = st.Page("pages/activity_results.py", title="Evaluation Results", url_path="Evaluation-Results", icon="📈")
+teacher_reports_page = st.Page("pages/teacher_reports.py", title="Teacher Reports", url_path="Teacher-Reports", icon="🧑‍🏫")
 manage_users_page = st.Page("pages/manage_users.py", title="Manage Users", url_path="Manage-Users", icon="👥")
 my_account_page = st.Page("pages/my_account.py", title="My Account", url_path="My-Account", icon="⚙️")
 audit_log_page = st.Page("pages/audit_log.py", title="Audit Log", url_path="Audit-Log", icon="🗂️")
@@ -35,7 +36,7 @@ audit_log_page = st.Page("pages/audit_log.py", title="Audit Log", url_path="Audi
 if auth.is_logged_in():
     pg = st.navigation(
         {
-            "Evaluations": [dashboard_page, create_evaluation_page, activity_results_page],
+            "Evaluations": [dashboard_page, create_evaluation_page, activity_results_page, teacher_reports_page],
             "Administration": [manage_users_page, my_account_page, audit_log_page],
             "Student form (for reference)": [evaluate_page],
         }
